@@ -221,11 +221,58 @@
 <script>
 // ─── Lash Styles ──────────────────────────────────────────────
 const STYLES = {
-  Aura: { count:20, lengthMult:1.1,  curl:0.25, thickness:1.8, wispy:false },
-  Gaze: { count:18, lengthMult:1.3,  curl:0.12, thickness:1.7, wispy:false, outerMult:1.5,  innerMult:0.6  },
-  Lush: { count:24, lengthMult:1.4,  curl:0.15, thickness:2.5, wispy:true  },
-  Muse: { count:22, lengthMult:1.25, curl:0.30, thickness:1.1, wispy:true,  outerMult:1.4,  innerMult:0.55 },
+  Aura: {
+    count: 22, baseLength: 13, curl: 0.25, thickness: 1.8, wispy: false,
+    distribution: 'round',
+    innerMult: 0.75, outerMult: 0.75
+  },
+  Gaze: {
+    count: 18, baseLength: 15, curl: 0.12, thickness: 1.7, wispy: false,
+    distribution: 'winged',
+    innerMult: 0.55, outerMult: 0.85
+  },
+  Lush: {
+    count: 8, baseLength: 14, curl: 0.15, thickness: 2.6, wispy: true,
+    distribution: 'spiky',
+    innerMult: 0.75, outerMult: 0.95
+  },
+  Muse: {
+    count: 7, baseLength: 15, curl: 0.30, thickness: 1.1, wispy: true,
+    distribution: 'manga',
+    innerMult: 0.50, outerMult: 1.0
+  },
 };
+
+// ─── Lash Mapping Logic ───────────────────────────────────────
+function getLashLength(index, total, style) {
+  const t = index / Math.max(total - 1, 1);
+  const { baseLength, innerMult, outerMult, distribution } = style;
+  let scaleFactor = 1.0;
+
+  if (distribution === 'round') {
+    // Aura: vòm đối xứng — sin curve, min 70%
+    scaleFactor = 0.70 + Math.sin(t * Math.PI) * 0.30;
+
+  } else if (distribution === 'winged') {
+    // Gaze: cat-eye — dài dần 80% đầu, hơi ngắn lại 20% cuối
+    if (t < 0.8) {
+      scaleFactor = innerMult + (t / 0.8) * (1.0 - innerMult);
+    } else {
+      scaleFactor = 1.0 - ((t - 0.8) / 0.2) * (1.0 - outerMult);
+    }
+
+  } else if (distribution === 'spiky' || distribution === 'manga') {
+    // Lush/Muse: cụm spike, sợi chính dài 100%, sợi tơ 70%
+    const spikeInterval = Math.max(1, Math.floor(total / style.count));
+    const isSpike = index % spikeInterval === 0;
+    scaleFactor = isSpike ? 1.0 : 0.70;
+    // Áp thêm slope theo chiều mắt
+    const slope = innerMult + t * (outerMult - innerMult);
+    scaleFactor *= slope;
+  }
+
+  return baseLength * scaleFactor;
+}
 
 // Eye landmark indices (MediaPipe Face Mesh)
 const L_UPPER = [246,161,160,159,158,157];
@@ -238,15 +285,14 @@ function buildEyeSVG(styleName) {
   const s = STYLES[styleName];
   let lashes = '';
   const ex = 32, ey = 18, ew = 26;
-  for (let i = 0; i < Math.min(s.count, 10); i++) {
-    const t = i / (Math.min(s.count,10)-1);
+  const previewCount = Math.min(s.count * (s.wispy ? 3 : 2), 14);
+  for (let i = 0; i < previewCount; i++) {
+    const t = i / Math.max(previewCount - 1, 1);
     const bx = ex - ew + t * ew*2;
     const arcY = ey - Math.sqrt(Math.max(0, ew*ew - (bx-ex)*(bx-ex))) * 0.55;
-    const tsin = Math.sin(t*Math.PI);
-    const profileMult = (s.outerMult !== undefined)
-      ? s.innerMult + (s.outerMult - s.innerMult) * t
-      : 1.0;
-    const len = 8 * s.lengthMult * (0.5 + 0.5*tsin) * profileMult;
+    const tsin = Math.sin(t * Math.PI);
+    const rawLen = getLashLength(i, previewCount, s);
+    const len = rawLen * 0.50;   // scale mm → SVG px
     const dx = (bx - ex)/(ew||1) * 0.35;
     const dy = -1;
     const norm = Math.sqrt(dx*dx+dy*dy)||1;
@@ -326,8 +372,10 @@ function drawLashes(landmarks, upperIdx, allIdx) {
   const xs = all.map(p=>p.x);
   const eyeW = Math.max(...xs) - Math.min(...xs);
 
-  for (let li = 0; li < s.count; li++) {
-    const t = li / (s.count - 1);
+  const totalFibers = s.count * (s.wispy ? 3 : 2);
+
+  for (let li = 0; li < totalFibers; li++) {
+    const t = li / Math.max(totalFibers - 1, 1);
     const ridx = t * (upper.length - 1);
     const i0 = Math.floor(ridx);
     const i1 = Math.min(i0+1, upper.length-1);
@@ -344,12 +392,12 @@ function drawLashes(landmarks, upperIdx, allIdx) {
     let px2 = -ny, py2 = nx;
     if (py2 > 0) { px2 = ny; py2 = -nx; }
 
-    const tsin = Math.sin(t * Math.PI);
-    const profileMult = (s.outerMult !== undefined)
-      ? s.innerMult + (s.outerMult - s.innerMult) * t
-      : 1.0;
-    const llen = eyeW * 0.33 * s.lengthMult * (0.45 + 0.55*tsin) * profileMult;
-    const lthick = s.thickness * (0.25 + 0.75*tsin);
+    // Scale mm → px: eyeW pixel ≈ 15mm thực tế
+    const mmToPx = eyeW / 15;
+    const rawLen = getLashLength(li, totalFibers, s);
+    const llen   = rawLen * mmToPx;
+    const tNorm  = Math.sin(t * Math.PI);
+    const lthick = s.thickness * (0.25 + 0.75 * tNorm);
 
     const cpx = px + nx*llen*0.45 + px2*llen*s.curl;
     const cpy = py + ny*llen*0.45 + py2*llen*s.curl;
@@ -368,7 +416,7 @@ function drawLashes(landmarks, upperIdx, allIdx) {
     ctx.stroke();
 
     // Wispy adds a second thinner strand nearby
-    if (s.wispy && li%2===0 && li < s.count-1) {
+    if (s.wispy && li%2===0 && li < totalFibers-1) {
       const offset = eyeW * 0.008;
       ctx.beginPath();
       ctx.moveTo(px + offset, py);
